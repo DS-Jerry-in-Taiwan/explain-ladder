@@ -1,0 +1,7 @@
+Meet RAG: Retrieval-Augmented Generation. It lets a language model answer from your documents, not just its memory.
+
+First, split your documents into small chunks. Turn each chunk into an embedding, a list of numbers that captures meaning. Store them in a vector database.
+
+When a user asks a question, embed the question too. Search the database for the closest chunks.
+
+Finally, give the question plus the retrieved chunks to the model. It writes an answer grounded in your data. An answer you can trust.

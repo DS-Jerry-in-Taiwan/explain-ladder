@@ -1,0 +1,8 @@
+flowchart TD
+    A["1. Split documents\ninto chunks"] --> B["2. Embed chunks\ninto vectors"]
+    B --> C[("3. Vector database\nstore + index")]
+    D["4. User question\n→ embed"] --> E["5. Search\nnearest chunks"]
+    C --> E
+    E --> F["6. LLM writes answer\nfrom retrieved chunks"]
+    style F fill:#d4edda,stroke:#28a745
+    style C fill:#cce5ff,stroke:#007bff

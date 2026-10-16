@@ -1,0 +1,57 @@
+flowchart TB
+    subgraph inputs["輸入 · topic dir（demo/rag/）"]
+        B["brief.md<br/>L1 · ASD-STE100 風格短文"]
+        M["diagram.mmd<br/>L2 · mermaid 原始碼"]
+        N["narration.txt<br/>L4 · 旁白稿（空行分段＝場景）"]
+    end
+
+    R["pipeline/run.py<br/>總指揮：依序跑 L2 → L3 → L4"]
+    B --> R
+    M --> R
+    N --> R
+
+    subgraph l2["L2 · 圖表"]
+        direction TB
+        RD["render_diagram.py"]
+        MC["mmdc<br/>+ chrome-headless-shell<br/>（--no-sandbox）"]
+        RD --> MC
+        SVG["diagram.svg<br/>（L3 內嵌用）"]
+        PNG["diagram.png<br/>（備用）"]
+        MC --> SVG
+        MC --> PNG
+    end
+    R --> RD
+
+    subgraph l3["L3 · 互動網頁"]
+        direction TB
+        BP["build_page.py<br/>markdown 轉 HTML + 模板組裝"]
+        HTML["index.html<br/>單檔：tabs / 步驟導覽 / 術語表"]
+        BP --> HTML
+    end
+    R --> BP
+    SVG -.-> BP
+
+    subgraph l4["L4 · 動畫講解影片"]
+        direction TB
+        BV["build_video.py"]
+        TTS["Piper TTS（本機）<br/>en_US-lessac-medium.onnx"]
+        WAV["seg0..3.wav<br/>逐段旁白"]
+        BV --> TTS
+        TTS --> WAV
+        MN["manim CLI 渲染 · 720p30<br/>SCENE_DUR 環境變數傳秒數<br/>Write / Create / FadeIn / Indicate /<br/>LaggedStart / AddTextLetterByLetter"]
+        SC["無聲場景 scene0..3.mp4"]
+        BV --> MN
+        MN --> SC
+        FF["ffmpeg<br/>旁白 mux（apad 補尾）→ concat"]
+        SC --> FF
+        WAV --> FF
+        MP4["explainer.mp4<br/>1280×720 · h264 + aac"]
+        FF --> MP4
+    end
+    R --> BV
+
+    style R fill:#1e3a5f,stroke:#38bdf8,color:#fff
+    style MP4 fill:#14532d,stroke:#34d399,color:#fff
+    style HTML fill:#14532d,stroke:#34d399,color:#fff
+    style SVG fill:#3b2f0b,stroke:#fbbf24,color:#fff
+    style PNG fill:#3b2f0b,stroke:#fbbf24,color:#fff

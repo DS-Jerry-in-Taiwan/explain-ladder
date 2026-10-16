@@ -1,0 +1,15 @@
+# 專案 venv 重建用（manim 0.22.0 已驗證可跑）
+# 用法：python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+manim==0.22.0
+ManimPango==0.7.0
+piper-tts==1.8.0
+pillow==12.3.0
+Markdown==3.11
+numpy==2.5.4
+scipy==1.18.1
+tqdm==4.70.1
+click==8.5.0
+
+# 系統依賴（不在 pip 裡，需另外裝）：
+# - ffmpeg（L4 影片 mux / concat）
+# - mmdc（@mermaid-js/mermaid-cli）＋ chrome-headless-shell（L2 圖表渲染）

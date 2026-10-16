@@ -1,0 +1,18 @@
+# 專案 venv（596MB）：照 requirements.txt 重建
+.venv/
+
+# Piper 語音模型（63MB）：用 assets/download_voice.sh 下載
+assets/voices/en_US-lessac-medium.onnx
+
+# Python 快取
+__pycache__/
+*.py[cod]
+
+# manim 渲染快取
+media/
+
+# L4 影片中間檔（TTS 音檔、逐段 mp4、concat 清單）
+out/*/_video_work/
+
+# 系統檔
+.DS_Store
