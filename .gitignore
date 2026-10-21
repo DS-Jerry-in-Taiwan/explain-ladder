@@ -16,3 +16,8 @@ out/*/_video_work/
 
 # 系統檔
 .DS_Store
+
+# MCP wrapper runtime
+mcp/.venv/
+mcp/node_modules/
+mcp_jobs/

@@ -111,11 +111,17 @@ def build(topic_dir, out_dir):
     with open(os.path.join(topic_dir, "narration.txt"), encoding="utf-8") as f:
         paras = [p.strip() for p in f.read().strip().split("\n\n") if p.strip()]
 
+    glossary = GLOSSARY
+    glossary_path = os.path.join(topic_dir, "glossary.json")
+    if os.path.exists(glossary_path):
+        with open(glossary_path, encoding="utf-8") as f:
+            glossary = [tuple(pair) for pair in _json.load(f)]
+
     title = brief_md.splitlines()[0].lstrip("# ").strip()
     brief_html = markdown.markdown("\n".join(brief_md.splitlines()[1:]))
     glossary_html = "".join(
         f"<details><summary>{html.escape(t)}</summary><p>{html.escape(d)}</p></details>"
-        for t, d in GLOSSARY)
+        for t, d in glossary)
     steps_json = _json.dumps([html.escape(p) for p in paras])
 
     page = PAGE_TEMPLATE.format(
