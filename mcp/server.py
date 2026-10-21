@@ -28,6 +28,11 @@ PROJECT = os.path.dirname(HERE)
 JOBS_DIR = os.path.join(PROJECT, "mcp_jobs")
 VENV_PY = os.path.join(PROJECT, ".venv", "bin", "python")
 RUNNER = os.path.join(HERE, "runner.py")
+PIPELINE = os.path.join(PROJECT, "pipeline")
+if PIPELINE not in sys.path:
+    sys.path.insert(0, PIPELINE)
+
+from build_video import resolve_tts_options
 
 mcp = FastMCP("explain-ladder")
 
@@ -78,6 +83,53 @@ Validation errors are returned in plain language so you can fix the
 input and call explain_start again.
 """
 
+SPEC_ZH = """# Explain Ladder — 給呼叫代理的繁體中文 authoring spec
+
+你提供內容；工具會以可重現的方式建立輸出。
+一次 render job 接受三個內容輸入（以及一個可選檔案）：
+
+## brief_md（用於 L1 文字與 L3 頁面）
+- 第一行必須是 `# 標題`；它會成為頁面標題。
+- 中文白話，使用短句，一句一個概念。不要求中文套用 ASD-STE100。
+- Markdown 可在標題下方使用。
+
+## diagram_mmd（L2 圖解）
+- 必須是有效的 Mermaid 語法，由 mermaid-cli 渲染。
+- 含特殊字元的中文 labels 請使用引號；需要換行時在 label 內使用 `\\n`。
+
+## narration_txt（L4 旁白，也用於 L3 逐步導覽）
+- 使用繁體中文純文字，以一個空白行分隔段落。
+- 一段等於一個 scene，也等於一個 TTS segment。
+- 段落數必須等於影片使用的 scene 數。
+
+## manim_scenes_py（可選；新主題的 L4 實務上需要）
+- Python source 必須定義 `SCENE_CLASSES = ["SceneA", ...]`，每個旁白段落依序對應一個 Manim Scene subclass。
+- 若省略，會使用內建的 **4 個 English RAG scenes**。lang 只更換字型，不會翻譯場景文案；要使用全中文 visuals 或其他主題，請提供自己的 scenes 和中文 glossary，不要誤用 English RAG fallback glossary。
+- topic scenes 可讀 `EXPLAIN_LANG`（`en` / `zh`）與解析後的 `EXPLAIN_FONT`；可用 `os.environ.get("EXPLAIN_FONT", "DejaVu Sans")` 指定 `Text(font=...)`。`SCENE_DUR` 約定不變。自行使用 `Tex`/`MathTex` 的 CJK 支援不在本次保證範圍。
+
+## glossary（可選，用於 L3 頁面）
+- `[term, definition]` pairs 的 list。省略時，中文頁面使用繁體中文 RAG glossary；自訂 glossary 優先。
+
+## levels
+- `L2`、`L3`、`L4` 的子集。L2 一定會渲染，因為 L3 需要 SVG、L4 需要 PNG。
+- L4 影片可能需要數分鐘；L2+L3 通常數秒完成。
+
+## 語言與 TTS / diagram 選項
+- 呼叫 `explain_spec(lang="zh")` 只取得本規格，不設定 job；`explain_start` 仍必須傳 `lang="zh"`。
+- `lang` 可為 `en` 或 `zh`。預設英文使用 Piper 與原 English voice；中文預設使用 edge-tts 的 `zh-TW-HsiaoChenNeural`。edge English voice 預設為 `en-US-AriaNeural`。
+- 可明確傳 `tts_engine="piper"` 或 `"edge"`，以及對應的 `tts_voice`；中文 Piper 必須明確提供中文 `.onnx` 模型。
+- `mermaid_theme` 可為 `default`、`dark`、`forest`、`neutral`、`base`；`mermaid_theme_variables` 是 Mermaid `themeVariables` object。`diagram_background` 傳給 Mermaid，`diagram_scale` 是 PNG scale，預設分別為 `white` 與 `2`。
+
+## 呼叫協定（async）
+1. `explain_start(...)` → `{job_id, warnings}`。
+2. 持續呼叫 `explain_status(job_id)`，直到 state 是 `done` 或 `failed`。
+3. `explain_result(job_id)` → 輸出檔案路徑。
+
+validation errors 會以可讀文字回傳，修正輸入後再呼叫 `explain_start`。
+
+旁白段落、scene-count、glossary、levels 與 async protocol 規則均與 English spec 相同。
+"""
+
 
 def _job_dir(job_id):
     if not re.fullmatch(r"[A-Za-z0-9._-]+", job_id or ""):
@@ -106,18 +158,82 @@ def _scene_count(manim_scenes_py):
 
 
 @mcp.tool()
-def explain_spec() -> str:
+def explain_spec(*, lang: str = "en") -> str:
     """Return the authoring spec an agent must follow to call the
     explain-ladder render tools: input formats for brief_md,
     diagram_mmd, narration_txt and manim_scenes_py, the hard
     paragraph/scene-count rule, and the async call protocol."""
-    return SPEC
+    if lang == "en":
+        return SPEC
+    if lang == "zh":
+        return SPEC_ZH
+    raise ValueError("lang must be one of: en, zh")
+
+
+def _validate_theme_variables(value):
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise ValueError(
+            "mermaid_theme_variables must be a JSON-serializable object: "
+            "expected a dict or None")
+
+    def check_keys(obj):
+        if isinstance(obj, dict):
+            for key, child in obj.items():
+                if not isinstance(key, str):
+                    raise ValueError(
+                        "mermaid_theme_variables must be a JSON-serializable "
+                        "object: all object keys must be strings")
+                check_keys(child)
+        elif isinstance(obj, (list, tuple)):
+            for child in obj:
+                check_keys(child)
+
+    try:
+        check_keys(value)
+        json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise ValueError(
+            "mermaid_theme_variables must be a JSON-serializable object: "
+            f"{exc}") from exc
+
+
+def _validate_options(lang, tts_engine, tts_voice, mermaid_theme,
+                      mermaid_theme_variables, diagram_background,
+                      diagram_scale, levels):
+    if not isinstance(lang, str) or lang not in ("en", "zh"):
+        raise ValueError("lang must be one of: en, zh")
+    if (not isinstance(mermaid_theme, str) or
+            mermaid_theme not in ("default", "dark", "forest", "neutral", "base")):
+        raise ValueError(
+            "unknown mermaid_theme: {!r}; allowed: default, dark, forest, "
+            "neutral, base".format(mermaid_theme))
+    if not isinstance(diagram_background, str) or not diagram_background:
+        raise ValueError("diagram_background must be a non-empty string")
+    if isinstance(diagram_scale, bool) or not isinstance(diagram_scale, int) or diagram_scale <= 0:
+        raise ValueError("diagram_scale must be a positive integer")
+    _validate_theme_variables(mermaid_theme_variables)
+    engine, voice = resolve_tts_options(
+        lang=lang, tts_engine=tts_engine, tts_voice=tts_voice)
+    if "L4" in levels and engine == "piper":
+        if not (os.path.isfile(voice) and os.path.isfile(voice + ".json")):
+            raise ValueError(
+                "Piper voice model and matching .onnx.json must exist for L4: "
+                f"{voice}")
+    return engine, voice
 
 
 @mcp.tool()
 def explain_start(name: str, brief_md: str, diagram_mmd: str,
                   narration_txt: str, manim_scenes_py: str = "",
-                  glossary: list = None, levels: list = None) -> str:
+                  glossary: list = None, levels: list = None, *,
+                  lang: str = "en", tts_engine: str | None = None,
+                  tts_voice: str | None = None,
+                  mermaid_theme: str = "default",
+                  mermaid_theme_variables: dict | None = None,
+                  diagram_background: str = "white",
+                  diagram_scale: int = 2) -> str:
     """Start an explain-ladder render job (async).
 
     name: slug for the topic, [a-z0-9][a-z0-9-_]*.
@@ -143,6 +259,12 @@ def explain_start(name: str, brief_md: str, diagram_mmd: str,
         raise ValueError("brief_md must start with a '# Title' line")
     if not diagram_mmd.strip():
         raise ValueError("diagram_mmd is empty; provide valid Mermaid source")
+
+    # Keep every v2 option check before creating the job directory or starting
+    # the runner.  resolve_tts_options also normalizes Piper paths.
+    engine, voice = _validate_options(
+        lang, tts_engine, tts_voice, mermaid_theme,
+        mermaid_theme_variables, diagram_background, diagram_scale, levels)
 
     paras = [p.strip() for p in narration_txt.strip().split("\n\n") if p.strip()]
     if not paras:
@@ -191,7 +313,12 @@ def explain_start(name: str, brief_md: str, diagram_mmd: str,
     job = {"job_id": job_id, "name": name, "levels": levels,
            "state": "running", "step": "queued",
            "topic_dir": topic, "out_dir": out, "outputs": {},
-           "warnings": warnings, "error": None}
+           "warnings": warnings, "error": None,
+           "lang": lang, "tts_engine": engine, "tts_voice": voice,
+           "mermaid_theme": mermaid_theme,
+           "mermaid_theme_variables": mermaid_theme_variables,
+           "diagram_background": diagram_background,
+           "diagram_scale": diagram_scale}
     with open(os.path.join(d, "job.json"), "w", encoding="utf-8") as f:
         json.dump(job, f, ensure_ascii=False, indent=2)
 

@@ -47,7 +47,12 @@ def main():
         job["step"] = "L2 diagram"
         save(job_dir, job)
         print("== L2 diagram ==", flush=True)
-        svg, png = render(os.path.join(topic, "diagram.mmd"), out)
+        svg, png = render(
+            os.path.join(topic, "diagram.mmd"), out,
+            scale=job.get("diagram_scale", 2),
+            theme=job.get("mermaid_theme", "default"),
+            theme_variables=job.get("mermaid_theme_variables"),
+            background=job.get("diagram_background", "white"))
         outputs["diagram_svg"] = svg
         outputs["diagram_png"] = png
         job["outputs"] = outputs
@@ -57,7 +62,8 @@ def main():
             job["step"] = "L3 page"
             save(job_dir, job)
             print("== L3 page ==", flush=True)
-            outputs["page_html"] = build_page(topic, out)
+            outputs["page_html"] = build_page(
+                topic, out, lang=job.get("lang", "en"))
             job["outputs"] = outputs
             save(job_dir, job)
 
@@ -65,7 +71,10 @@ def main():
             job["step"] = "L4 video"
             save(job_dir, job)
             print("== L4 video ==", flush=True)
-            outputs["video_mp4"] = build_video(topic, out, png)
+            outputs["video_mp4"] = build_video(
+                topic, out, png, lang=job.get("lang", "en"),
+                tts_engine=job.get("tts_engine"),
+                tts_voice=job.get("tts_voice"))
             job["outputs"] = outputs
             save(job_dir, job)
 

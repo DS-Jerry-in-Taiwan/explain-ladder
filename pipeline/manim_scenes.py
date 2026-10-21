@@ -24,7 +24,9 @@ CARD = "#1e293b"
 EDGE = "#334155"
 
 D = float(os.environ.get("SCENE_DUR", "5.0"))
-FONT = "DejaVu Sans"
+FONT = os.environ.get("EXPLAIN_FONT") or (
+    "Noto Sans CJK TC" if os.environ.get("EXPLAIN_LANG") == "zh"
+    else "DejaVu Sans")
 
 
 def card(w=3.4, h=1.9, outline=EDGE, fill=CARD):

@@ -3,6 +3,7 @@
 manim==0.22.0
 ManimPango==0.7.0
 piper-tts==1.8.0
+edge-tts==7.3.1
 pillow==12.3.0
 Markdown==3.11
 numpy==2.5.4

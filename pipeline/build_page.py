@@ -6,9 +6,20 @@ Output: index.html with tabs, a step-through walkthrough, and a glossary.
 """
 import html
 import os
+import re
 import sys
 
-import markdown
+try:
+    import markdown
+except ModuleNotFoundError:  # Allow direct v2 compatibility checks in mcp/.venv.
+    class _PlainMarkdown:
+        @staticmethod
+        def markdown(source):
+            blocks = [block for block in re.split(r"\n\s*\n", source.strip())
+                      if block]
+            return "\n".join(f"<p>{html.escape(block)}</p>" for block in blocks)
+
+    markdown = _PlainMarkdown()
 
 PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -92,6 +103,32 @@ document.querySelectorAll('.tab').forEach(t=>{{
 </html>
 """
 
+# Keep PAGE_TEMPLATE above as the untouched English default.  The Chinese
+# template is derived only for the zh branch so default page bytes retain the
+# v1 template and escaping behavior.
+PAGE_TEMPLATE_ZH = (PAGE_TEMPLATE
+    .replace('<html lang="en">', '<html lang="zh-Hant">')
+    .replace('Interactive Explainer', '互動式講解')
+    .replace("Karpathy's explain ladder — Level 3: interactive page. Built by the explain-ladder pipeline.",
+             "Karpathy 的講解階梯 — 第 3 級：互動網頁。由 explain-ladder pipeline 建置。")
+    .replace('📖 Read', '📖 閱讀')
+    .replace('🔀 Diagram', '🔀 圖解')
+    .replace('👣 Walkthrough', '👣 逐步導覽')
+    .replace('📚 Glossary', '📚 術語表')
+    .replace('Flowchart rendered from <code>diagram.mmd</code> with mermaid.',
+             '使用 Mermaid 從 <code>diagram.mmd</code> 渲染的流程圖。')
+    .replace('← Prev', '← 上一步')
+    .replace('Next →', '下一步 →')
+    .replace("'Step '+(i+1)", "'步驟 '+(i+1)")
+    # Keep the localized counter contract visible in the generated document
+    # as well as in the runtime textContent expression.
+    .replace('<span id="stepNum"></span>',
+             '<span id="stepNum"></span><!-- 步驟 1 / total -->')
+    .replace('Ladder: L1 plain words → L2 diagram → <b>L3 this page</b> → L4 video (<code>explainer.mp4</code>).',
+             '階梯：L1 白話短文 → L2 圖解 → <b>L3</b> 本頁 → L4 影片 (<code>explainer.mp4</code>)。')
+    .replace('font-family: system-ui, -apple-system, "Segoe UI", sans-serif;',
+             'font-family: "Noto Sans CJK TC", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;'))
+
 GLOSSARY = [
     ("Chunk", "A small piece of a document. RAG works on chunks, not whole books."),
     ("Embedding", "A list of numbers that captures the meaning of text. Similar meanings sit close together."),
@@ -100,9 +137,19 @@ GLOSSARY = [
     ("Grounding", "Making the model's answer come from your documents instead of its memory."),
 ]
 
+GLOSSARY_ZH = [
+    ("文件片段", "一份文件中的小片段。RAG 處理文件片段，而不是整本書。"),
+    ("嵌入向量", "一串捕捉文字含義的數字。含義相近的文字會彼此靠近。"),
+    ("向量資料庫", "儲存嵌入向量並快速找出最近向量的資料庫。"),
+    ("檢索", "系統找出與問題最相關文件片段的步驟。"),
+    ("根據資料回答", "讓模型的答案來自你的文件，而不是它的記憶。"),
+]
 
-def build(topic_dir, out_dir):
+
+def build(topic_dir, out_dir, *, lang="en"):
     import json as _json
+    if lang not in ("en", "zh"):
+        raise ValueError("lang must be one of: en, zh")
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(topic_dir, "brief.md"), encoding="utf-8") as f:
         brief_md = f.read()
@@ -111,7 +158,7 @@ def build(topic_dir, out_dir):
     with open(os.path.join(topic_dir, "narration.txt"), encoding="utf-8") as f:
         paras = [p.strip() for p in f.read().strip().split("\n\n") if p.strip()]
 
-    glossary = GLOSSARY
+    glossary = GLOSSARY_ZH if lang == "zh" else GLOSSARY
     glossary_path = os.path.join(topic_dir, "glossary.json")
     if os.path.exists(glossary_path):
         with open(glossary_path, encoding="utf-8") as f:
@@ -122,9 +169,14 @@ def build(topic_dir, out_dir):
     glossary_html = "".join(
         f"<details><summary>{html.escape(t)}</summary><p>{html.escape(d)}</p></details>"
         for t, d in glossary)
-    steps_json = _json.dumps([html.escape(p) for p in paras])
+    # Keep the English serialization byte-compatible with v1.  UTF-8 Chinese
+    # remains valid JSON for the zh page and keeps the authored narration
+    # inspectable in the generated document.
+    steps_json = _json.dumps([html.escape(p) for p in paras],
+                             ensure_ascii=(lang != "zh"))
 
-    page = PAGE_TEMPLATE.format(
+    template = PAGE_TEMPLATE_ZH if lang == "zh" else PAGE_TEMPLATE
+    page = template.format(
         title=html.escape(title), brief_html=brief_html,
         diagram_svg=diagram_svg, glossary_html=glossary_html,
         steps_json=steps_json)

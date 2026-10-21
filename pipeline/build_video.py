@@ -16,11 +16,55 @@ import shutil
 import subprocess
 import sys
 import wave
+import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(HERE)
 VOICE = os.path.join(PROJECT, "assets", "voices", "en_US-lessac-medium.onnx")
 DEFAULT_SCENES = os.path.join(HERE, "manim_scenes.py")
+
+
+def resolve_tts_options(*, lang="en", tts_engine=None, tts_voice=None):
+    """Return validated, effective TTS engine and voice using stdlib only."""
+    if not isinstance(lang, str) or lang not in ("en", "zh"):
+        raise ValueError("lang must be one of: en, zh")
+    if (tts_engine is not None and
+            (not isinstance(tts_engine, str) or
+             tts_engine not in ("piper", "edge"))):
+        raise ValueError("tts_engine must be one of: piper, edge")
+    if tts_voice is not None and (not isinstance(tts_voice, str) or not tts_voice):
+        raise ValueError("tts_voice must be a non-empty string when provided")
+
+    engine = tts_engine or ("edge" if lang == "zh" else "piper")
+    if tts_voice is None:
+        if engine == "edge":
+            voice = "zh-TW-HsiaoChenNeural" if lang == "zh" else "en-US-AriaNeural"
+        elif lang == "zh":
+            raise ValueError(
+                "lang='zh' with tts_engine='piper' requires tts_voice: "
+                "provide a Chinese .onnx model or use edge")
+        else:
+            voice = VOICE
+    else:
+        voice = tts_voice
+
+    if engine == "edge":
+        if not re.fullmatch(r"[a-z]{2,3}-[A-Z]{2}-[A-Za-z0-9]+Neural", voice):
+            raise ValueError(
+                "edge tts_voice must match a neural voice short name such as "
+                "en-US-AriaNeural")
+    else:
+        if not os.path.isabs(voice):
+            voice = os.path.abspath(os.path.join(PROJECT, voice))
+        else:
+            voice = os.path.abspath(voice)
+    return engine, voice
+
+
+def _font_for_lang(lang):
+    if lang not in ("en", "zh"):
+        raise ValueError("lang must be one of: en, zh")
+    return "Noto Sans CJK TC" if lang == "zh" else "DejaVu Sans"
 
 
 def manim_bin():
@@ -37,17 +81,74 @@ def load_scene_classes(scenes_file):
     return mod.SCENE_CLASSES
 
 
-def tts_wavs(paras, workdir):
-    from piper import PiperVoice
-    voice = PiperVoice.load(VOICE)
+def _tail(value):
+    if value is None:
+        return ""
+    return str(value)[-1500:]
+
+
+def _tts_failure(engine, voice, index, stage, detail):
+    return RuntimeError(
+        f"TTS engine={engine} voice={voice} paragraph={index + 1} "
+        f"stage={stage} failed: {_tail(detail)}")
+
+
+def _edge_tts_wavs(paras, workdir, voice):
     wavs = []
-    for i, p in enumerate(paras):
+    for i, paragraph in enumerate(paras):
+        txt = os.path.join(workdir, f"seg{i}.txt")
+        mp3 = os.path.join(workdir, f"seg{i}.mp3")
+        wav = os.path.join(workdir, f"seg{i}.wav")
+        with open(txt, "w", encoding="utf-8") as f:
+            f.write(paragraph)
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "edge_tts", "--file", txt,
+                 "--voice", voice, "--write-media", mp3],
+                capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired as exc:
+            raise _tts_failure("edge", voice, i, "synthesis", exc.stderr) from exc
+        if result.returncode != 0:
+            raise _tts_failure("edge", voice, i, "synthesis", result.stderr)
+        if not os.path.isfile(mp3) or os.path.getsize(mp3) == 0:
+            raise _tts_failure("edge", voice, i, "synthesis", "MP3 is empty or missing")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", mp3, "-vn", "-ac", "1", "-ar", "24000",
+                 "-c:a", "pcm_s16le", wav],
+                capture_output=True, text=True, check=True, timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            raise _tts_failure("edge", voice, i, "wav conversion", exc.stderr) from exc
+        except subprocess.CalledProcessError as exc:
+            raise _tts_failure("edge", voice, i, "wav conversion", exc.stderr) from exc
+        if not os.path.isfile(wav) or os.path.getsize(wav) == 0:
+            raise _tts_failure("edge", voice, i, "wav validation", "WAV is empty or missing")
+        try:
+            if wav_seconds(wav) <= 0:
+                raise ValueError("WAV duration is zero")
+        except Exception as exc:
+            raise _tts_failure("edge", voice, i, "wav validation", exc) from exc
+        wavs.append(wav)
+    return wavs
+
+
+def tts_wavs(paras, workdir, *, lang="en", tts_engine=None, tts_voice=None):
+    engine, voice = resolve_tts_options(
+        lang=lang, tts_engine=tts_engine, tts_voice=tts_voice)
+    os.makedirs(workdir, exist_ok=True)
+    if engine == "edge":
+        return _edge_tts_wavs(paras, workdir, voice)
+
+    from piper import PiperVoice
+    piper_voice = PiperVoice.load(voice)
+    wavs = []
+    for i, paragraph in enumerate(paras):
         wav = os.path.join(workdir, f"seg{i}.wav")
         with wave.open(wav, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(voice.config.sample_rate)
-            voice.synthesize_wav(p, wf)
+            wf.setframerate(piper_voice.config.sample_rate)
+            piper_voice.synthesize_wav(paragraph, wf)
         wavs.append(wav)
     return wavs
 
@@ -57,8 +158,11 @@ def wav_seconds(path):
         return wf.getnframes() / wf.getframerate()
 
 
-def render_scene(scene_cls, scenes_file, dur, wav_path, seg_path, workdir, idx):
-    env = dict(os.environ, SCENE_DUR=f"{dur:.2f}")
+def render_scene(scene_cls, scenes_file, dur, wav_path, seg_path, workdir, idx,
+                 *, lang="en"):
+    font = _font_for_lang(lang)
+    env = dict(os.environ, EXPLAIN_LANG=lang, EXPLAIN_FONT=font,
+               SCENE_DUR=f"{dur:.2f}")
     media = os.path.join(workdir, "manim_media")
     out_name = f"scene{idx}"
     r = subprocess.run(
@@ -79,7 +183,11 @@ def render_scene(scene_cls, scenes_file, dur, wav_path, seg_path, workdir, idx):
         check=True, capture_output=True)
 
 
-def build(topic_dir, out_dir, diagram_png=None):
+def build(topic_dir, out_dir, diagram_png=None, *, lang="en", tts_engine=None,
+          tts_voice=None):
+    font = _font_for_lang(lang)
+    engine, voice = resolve_tts_options(
+        lang=lang, tts_engine=tts_engine, tts_voice=tts_voice)
     os.makedirs(out_dir, exist_ok=True)
     work = os.path.join(out_dir, "_video_work")
     os.makedirs(work, exist_ok=True)
@@ -90,17 +198,33 @@ def build(topic_dir, out_dir, diagram_png=None):
     scenes_file = os.path.join(topic_dir, "manim_scenes.py")
     if not os.path.exists(scenes_file):
         scenes_file = DEFAULT_SCENES
-    scene_classes = load_scene_classes(scenes_file)
+    old_lang = os.environ.get("EXPLAIN_LANG")
+    old_font = os.environ.get("EXPLAIN_FONT")
+    os.environ["EXPLAIN_LANG"] = lang
+    os.environ["EXPLAIN_FONT"] = font
+    try:
+        scene_classes = load_scene_classes(scenes_file)
+    finally:
+        if old_lang is None:
+            os.environ.pop("EXPLAIN_LANG", None)
+        else:
+            os.environ["EXPLAIN_LANG"] = old_lang
+        if old_font is None:
+            os.environ.pop("EXPLAIN_FONT", None)
+        else:
+            os.environ["EXPLAIN_FONT"] = old_font
     assert len(scene_classes) == len(paras), \
         f"{len(paras)} narration paragraphs but {len(scene_classes)} scenes"
 
-    wavs = tts_wavs(paras, work)
+    print(f"TTS engine={engine} voice={voice}", flush=True)
+    wavs = tts_wavs(paras, work, lang=lang, tts_engine=engine,
+                    tts_voice=voice)
     segs = []
     for i, (cls, wav) in enumerate(zip(scene_classes, wavs)):
         dur = wav_seconds(wav) + 0.8
         seg = os.path.join(work, f"seg{i}.mp4")
         print(f"  manim {cls} ({dur:.1f}s)...", flush=True)
-        render_scene(cls, scenes_file, dur, wav, seg, work, i)
+        render_scene(cls, scenes_file, dur, wav, seg, work, i, lang=lang)
         segs.append(seg)
 
     lst = os.path.join(work, "concat.txt")
